@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Vending Machine FP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap">
+<style>
+  /* Same look as the stock-alerts walkthrough: the machine and its internals on top (LTR), the narration under it (RTL). */
+  :root {
+    --bg: #eef2f6; --surface: #ffffff; --ink: #142130; --muted: #5a6b7d; --line: #b9c5d2; --grid: #dde4ec; --chip: #e6ecf3;
+    --idle: #5a6b7d;        /* phase colours */
+    --paying: #2563c9;
+    --dispensing: #b4237a;
+    --event: #12805c;       /* events flowing in */
+    --effect: #b45a09;      /* effects flowing out */
+    --fail: #c8321e;
+    --body: #d9e1ea; --glass: #f7fafc; --lcd: #0f2a1d; --lcd-ink: #7dffb2;
+    --font-body: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d141c; --surface: #16202b; --ink: #e3eaf1; --muted: #93a4b5; --line: #3a4a5a; --grid: #1c2733; --chip: #1f2b38;
+      --idle: #93a4b5; --paying: #6aa2ff; --dispensing: #f06bb8; --event: #3fc596; --effect: #f2a654; --fail: #ff7a63;
+      --body: #223040; --glass: #101922; --lcd: #08170f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d141c; --surface: #16202b; --ink: #e3eaf1; --muted: #93a4b5; --line: #3a4a5a; --grid: #1c2733; --chip: #1f2b38;
+    --idle: #93a4b5; --paying: #6aa2ff; --dispensing: #f06bb8; --event: #3fc596; --effect: #f2a654; --fail: #ff7a63;
+    --body: #223040; --glass: #101922; --lcd: #08170f;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+  .wrap {
+    max-width: 1180px; margin: 0 auto; padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid; gap: 18px;
+  }
+  header { display: grid; gap: 6px; }
+  h1 { margin: 0; font-size: clamp(26px, 4vw, 38px); line-height: 1.15; letter-spacing: -0.01em; text-wrap: balance; }
+  .tagline { margin: 0; color: var(--muted); max-width: 66ch; }
+  .tagline code, .now code, .decisions code { font-family: var(--font-mono); font-size: 0.86em; background: var(--chip); border-radius: 3px; padding: 1px 4px; }
+  .repo { margin: 0; font-size: 13.5px; color: var(--muted); }
+  .repo a { color: var(--paying); font-weight: 600; font-family: var(--font-mono); font-size: 13px; }
+  .stack { display: flex; flex-wrap: wrap; gap: 6px; direction: ltr; justify-content: flex-end; }
+  .stack span { font-family: var(--font-mono); font-size: 12px; background: var(--chip); color: var(--muted); padding: 2px 8px; border-radius: 4px; }
+
+  button {
+    font: inherit; font-size: 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    padding: 6px 12px; border-radius: 6px; line-height: 1.4;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { cursor: not-allowed; opacity: .45; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--paying); outline-offset: 2px; }
+
+  /* Controls */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .player { display: flex; gap: 6px; align-items: center; }
+  .player .primary { background: var(--paying); color: #fff; border-color: var(--paying); min-width: 92px; }
+
+  /* Board: machine | step() + state diagram */
+  .board { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; direction: ltr; display: grid; grid-template-columns: 330px minmax(0, 1fr); }
+  @media (max-width: 860px) { .board { grid-template-columns: 1fr; } }
+  .pane { padding: 16px; min-width: 0; }
+  .pane + .pane { border-left: 1px solid var(--grid); }
+  @media (max-width: 860px) { .pane + .pane { border-left: 0; border-top: 1px solid var(--grid); } }
+  .pane-title { margin: 0 0 10px; font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .pane-title .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  /* The machine */
+  .vm { background: var(--body); border-radius: 14px; padding: 12px; display: grid; gap: 10px; }
+  .lcd { background: var(--lcd); color: var(--lcd-ink); font-family: var(--font-mono); font-size: 13px; border-radius: 6px; padding: 8px 10px; min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .glass { background: var(--glass); border-radius: 8px; padding: 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .slot { display: grid; justify-items: center; gap: 1px; padding: 6px 2px; border-radius: 6px; font-size: 12px; line-height: 1.25; border: 2px solid transparent; background: var(--surface); }
+  .slot .emoji { font-size: 22px; line-height: 1.2; }
+  .slot .id { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+  .slot .price { font-family: var(--font-mono); font-weight: 600; }
+  .slot .qty { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+  .slot.selected { border-color: var(--paying); }
+  .slot.vending { border-color: var(--dispensing); animation: shake .25s linear 4; }
+  .slot.empty .emoji { filter: grayscale(1); opacity: .35; }
+  @keyframes shake { 25% { transform: translateY(-2px); } 75% { transform: translateY(2px); } }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .coin { width: 42px; height: 42px; padding: 0; border-radius: 50%; font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; background: linear-gradient(145deg, #f3d77c, #c99a2e); color: #3a2a00; border-color: #b4892a; }
+  .coin.silver { background: linear-gradient(145deg, #eef1f4, #a9b2bb); color: #1c2733; border-color: #8d97a1; }
+  .actions .buy { flex: 1; }
+  .actions .cancel { font-size: 13px; }
+  .trays { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; }
+  .tray { background: var(--lcd); border-radius: 6px; min-height: 46px; padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; position: relative; }
+  .tray::before { content: attr(data-label); position: absolute; top: 2px; left: 8px; font-family: var(--font-mono); font-size: 9px; color: #6f8a7b; letter-spacing: .05em; }
+  .tray { min-height: 64px; padding-top: 18px; }
+  .tray .item { display: grid; justify-items: center; font-size: 26px; line-height: 1; }
+  .tray .item small { font-family: var(--font-mono); font-size: 9.5px; color: var(--lcd-ink); margin-top: 2px; }
+  .tray .new { animation: drop .5s cubic-bezier(.3,1.4,.5,1) backwards; }
+  .tray .empty-t { font-family: var(--font-mono); font-size: 10px; color: #4f6b5c; }
+  @keyframes drop { from { transform: translateY(-26px); opacity: 0; } }
+  .box { font-family: var(--font-mono); font-size: 11px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .box b { color: var(--ink); font-weight: 600; }
+  .pay { background: var(--glass); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; font-family: var(--font-mono); font-size: 12.5px; }
+  .pay-steps { margin: 0 0 4px; padding: 0; list-style: none; display: flex; gap: 4px; counter-reset: p; }
+  .pay-steps li { counter-increment: p; flex: 1; font-size: 10.5px; text-align: center; padding: 3px 2px; border-radius: 4px; background: var(--chip); color: var(--muted); }
+  .pay-steps li::before { content: counter(p) " "; font-weight: 600; }
+  .pay-steps li.done { color: var(--event); }
+  .pay-steps li.cur { background: var(--paying); color: #fff; font-weight: 600; }
+  .pay-row { display: flex; justify-content: space-between; gap: 8px; }
+  .pay-row.ok b { color: var(--event); }
+  .pay-row.due b { color: var(--effect); }
+  .pay-coins { display: flex; flex-wrap: wrap; gap: 3px; min-height: 24px; align-items: center; }
+  .pay-coins .muted, .pay .muted { color: var(--muted); font-size: 11.5px; }
+  .pay .c, .tray .c { font-family: var(--font-mono); font-size: 10px; font-weight: 600; width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; background: #e0b84f; color: #3a2a00; }
+  .pay .c.silver, .tray .c.silver { background: #c2cad2; color: #1c2733; }
+  .pay .c.new { animation: drop .35s cubic-bezier(.3,1.4,.5,1); }
+  .keys .buy { background: var(--event); color: #fff; border-color: var(--event); font-weight: 600; }
+  .keys .buy.ready { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--event) 30%, transparent); } }
+  .keys-hint { margin: -4px 0 0; font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+  .jam { display: flex; gap: 8px; align-items: center; font-size: 13px; direction: rtl; }
+  .hw { border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 6px; }
+  .hw .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .hw button { font-family: var(--font-mono); font-size: 12.5px; }
+  .hw p { margin: 0; font-size: 12px; color: var(--muted); direction: rtl; text-align: right; }
+
+  /* step() */
+  .fn { display: grid; gap: 8px; font-family: var(--font-mono); font-size: 12.5px; }
+  .fn .sig { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .fn .kw { color: var(--muted); }
+  .pill { border-radius: 999px; padding: 2px 10px; border: 1.5px solid currentColor; white-space: nowrap; font-weight: 600; }
+  .pill.idle { color: var(--idle); } .pill.paying { color: var(--paying); } .pill.dispensing { color: var(--dispensing); }
+  .pill.ev { color: var(--event); background: color-mix(in srgb, var(--event) 12%, transparent); }
+  .pill.fx { color: var(--effect); background: color-mix(in srgb, var(--effect) 12%, transparent); font-weight: 500; }
+  .pill.none { color: var(--muted); border-style: dashed; font-weight: 400; }
+  .fn .in .pill.ev { animation: slidein .45s ease-out; }
+  .fn .out .pill { animation: slideout .45s ease-out .25s backwards; }
+  @keyframes slidein { from { transform: translateX(-24px); opacity: 0; } }
+  @keyframes slideout { from { transform: translateX(-12px); opacity: 0; } }
+  .fn .arrow { color: var(--muted); padding-left: 6px; }
+
+  /* State diagram */
+  svg.diagram { display: block; width: 100%; height: auto; margin-top: 8px; font-family: var(--font-mono); }
+  .snode rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; transition: stroke .25s, stroke-width .25s, fill .25s; }
+  .snode text { font-size: 13px; font-weight: 600; fill: var(--muted); text-anchor: middle; dominant-baseline: middle; }
+  .snode text.sub { font-size: 9.5px; font-weight: 400; }
+  #n-idle.active rect { stroke: var(--idle); stroke-width: 3; fill: color-mix(in srgb, var(--idle) 10%, var(--surface)); }
+  #n-paying.active rect { stroke: var(--paying); stroke-width: 3; fill: color-mix(in srgb, var(--paying) 10%, var(--surface)); }
+  #n-dispensing.active rect { stroke: var(--dispensing); stroke-width: 3; fill: color-mix(in srgb, var(--dispensing) 10%, var(--surface)); }
+  .snode.active text { fill: var(--ink); }
+  .snode.rejected rect { animation: reject .5s ease-in-out; }
+  @keyframes reject { 30% { stroke: var(--fail); stroke-width: 3; } }
+  .sedge { fill: none; stroke: var(--line); stroke-width: 1.8; }
+  .sedge.active { stroke: var(--event); stroke-width: 2.5; stroke-dasharray: 7 6; animation: flow .6s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -26; } }
+  .elabel { font-size: 10px; fill: var(--muted); }
+  .elabel.active { fill: var(--event); font-weight: 600; }
+
+  /* Timeline (time travel) */
+  .timeline { border-top: 1px solid var(--grid); padding: 12px 16px; direction: ltr; display: grid; gap: 8px; grid-column: 1 / -1; }
+  .tl-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .tl-head input { flex: 1 1 200px; accent-color: var(--paying); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chips button { font-family: var(--font-mono); font-size: 11.5px; padding: 2px 8px; border-radius: 999px; }
+  .chips button.past { color: var(--ink); }
+  .chips button.future { color: var(--muted); border-style: dashed; }
+  .chips button.current { background: var(--event); color: #fff; border-color: var(--event); }
+  .chips .empty { font-size: 12px; color: var(--muted); }
+
+  /* Narration */
+  .narration { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 18px; align-items: start; }
+  @media (max-width: 820px) { .narration { grid-template-columns: 1fr; } }
+  .steps { margin: 0; padding: 14px 16px; list-style: none; counter-reset: s; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 2px; }
+  .steps li { counter-increment: s; }
+  .steps button { width: 100%; text-align: start; border: 0; background: transparent; padding: 6px 8px; border-radius: 6px; display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
+  .steps button::before { content: counter(s); font-family: var(--font-mono); font-size: 12px; min-width: 1.6em; text-align: center; }
+  .steps li.done button { color: var(--ink); }
+  .steps li.current button { background: var(--chip); color: var(--ink); font-weight: 600; }
+  .steps .hint { color: var(--muted); font-size: 13.5px; padding: 6px 8px; margin: 0; }
+  .now { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 10px; min-width: 0; }
+  .now .eyebrow { font-size: 12.5px; color: var(--muted); }
+  .now h2 { margin: 0; font-size: 21px; line-height: 1.3; text-wrap: balance; }
+  .now p { margin: 0; max-width: 64ch; }
+  .now pre { margin: 0; direction: ltr; text-align: left; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; background: var(--bg); border: 1px solid var(--grid); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; color: var(--ink); }
+
+  .results { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; display: grid; gap: 10px; }
+  .results h2 { margin: 0; font-size: 17px; }
+  .results p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: start; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.num { font-family: var(--font-mono); direction: ltr; text-align: end; white-space: nowrap; color: var(--event); font-weight: 600; }
+
+  .decisions { display: grid; gap: 10px; }
+  .dec-head { display: grid; gap: 6px; margin-top: 8px; }
+  .dec-head h2 { margin: 0; font-size: clamp(22px, 3vw, 28px); text-wrap: balance; }
+  .dec-head p { margin: 0; color: var(--muted); max-width: 70ch; }
+  .decisions details { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+  .decisions details[open] { border-color: var(--muted); }
+  .decisions summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 16px; font-weight: 600; font-size: 15.5px; }
+  .decisions summary::-webkit-details-marker { display: none; }
+  .decisions summary::before { content: "+"; font-family: var(--font-mono); color: var(--muted); width: 1ch; }
+  .decisions details[open] summary::before { content: "\2212"; }
+  .decisions summary:focus-visible { outline: 2px solid var(--paying); outline-offset: -2px; border-radius: 10px; }
+  .decisions .q { flex: 1 1 18rem; min-width: 0; }
+  .decisions .pick { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--paying); background: var(--chip); border-radius: 4px; padding: 2px 8px; direction: ltr; }
+  .decisions .ans { padding: 0 16px 14px; display: grid; gap: 10px; min-width: 0; }
+  .decisions ul { margin: 0; padding-inline-start: 20px; display: grid; gap: 6px; max-width: 72ch; }
+  .decisions li, .decisions .alt { line-height: 1.75; font-size: 14.5px; }
+  .decisions .alt { margin: 0; max-width: 72ch; padding: 8px 12px; background: var(--bg); border-radius: 6px; }
+  .decisions pre { margin: 0; direction: ltr; text-align: left; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; background: var(--bg); border: 1px solid var(--grid); border-radius: 6px; padding: 10px 12px; overflow-x: auto; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>آلة بيع كلها function واحدة</h1>
+    <p class="tagline">
+      نفس سؤال الـ LLD المشهور، بس من غير State Pattern ومن غير objects بتغيّر في بعض.
+      الآلة كلها <code>step(machine, event) → [machine, effects]</code>: function نقية بتاخد الحالة وحدث، وبترجّع حالة جديدة وقائمة بالحاجات المطلوب تنفيذها.
+      الصفحة دي بتشغّل نفس الكود اللي عليه التستات، ومش بتخزّن state خالص: بتخزّن الـ events وتعيد تشغيلها.
+    </p>
+    <p class="repo">الكود: <a href="https://github.com/abo3ish/vending-machine-fp">github.com/abo3ish/vending-machine-fp</a></p>
+    <div class="stack"><span>TypeScript</span><span>pure functions</span><span>discriminated unions</span><span>fast-check</span><span>node:test</span></div>
+  </header>
+
+  <div class="controls">
+    <div class="tabs" id="tabs" role="group" aria-label="السيناريوهات"></div>
+    <div class="player">
+      <button id="prev" aria-label="الخطوة اللي فاتت">→</button>
+      <button id="play" class="primary">▶ تشغيل</button>
+      <button id="next" aria-label="الخطوة الجاية">←</button>
+    </div>
+  </div>
+
+  <section class="board" aria-label="الآلة من جوه">
+    <div class="pane">
+      <p class="pane-title"><span class="dot" style="background: var(--effect)"></span>Imperative shell · the machine</p>
+      <div class="vm">
+        <div class="lcd" aria-live="polite"><span id="lcd">Welcome</span></div>
+        <div class="glass" id="slots"></div>
+        <div class="pay" id="pay"></div>
+        <div class="keys" id="coins"></div>
+        <p class="keys-hint">each click = one coin · $1.10 = $1 then 10¢</p>
+        <div class="keys actions" id="actions"><button class="buy" data-buy>BUY</button><button class="cancel" data-cancel>cancel</button></div>
+        <div class="trays">
+          <div class="tray" id="tray" data-label="PUSH"></div>
+          <div class="tray" id="change" data-label="CHANGE"></div>
+        </div>
+        <div class="box" id="box"></div>
+      </div>
+      <div class="hw">
+        <label class="jam"><input type="checkbox" id="jam"> خلّي المنتج يتزنق في البيعة الجاية</label>
+        <p>الـ sensor متمثّل هنا: بعد ما تدوس BUY بثانية، بيبعت event اسمه <code>dispensed</code> (أو <code>jammed</code> لو علّمت فوق). الـ core مش بيعرف إن فيه motor ولا sensor، هو بيستقبل events وخلاص، سواء جاية من الزبون أو من الآلة.</p>
+      </div>
+    </div>
+
+    <div class="pane">
+      <p class="pane-title"><span class="dot" style="background: var(--event)"></span>Functional core · step()</p>
+      <div class="fn" id="fn"></div>
+      <svg class="diagram" id="diagram" viewBox="0 0 600 250" role="img" aria-label="الحالات الثلاثة والانتقالات بينها">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+          </marker>
+        </defs>
+        <path class="sedge" id="e-select" d="M140,104 L200,104" marker-end="url(#arrow)"/>
+        <text class="elabel" id="l-select" x="170" y="96" text-anchor="middle">select</text>
+        <path class="sedge" id="e-back" d="M200,132 L140,132" marker-end="url(#arrow)"/>
+        <text class="elabel" id="l-back" x="170" y="150" text-anchor="middle">cancel</text>
+        <text class="elabel" x="170" y="162" text-anchor="middle" id="l-back2">no change</text>
+        <path class="sedge" id="e-loop" d="M245,96 C232,40 308,40 295,96" marker-end="url(#arrow)"/>
+        <text class="elabel" id="l-loop" x="270" y="34" text-anchor="middle">insert</text>
+        <path class="sedge" id="e-pay" d="M340,118 L440,118" marker-end="url(#arrow)"/>
+        <text class="elabel" id="l-pay" x="390" y="110" text-anchor="middle">buy</text>
+        <path class="sedge" id="e-done" d="M505,142 C505,236 80,236 80,142" marker-end="url(#arrow)"/>
+        <text class="elabel" id="l-done" x="292" y="226" text-anchor="middle">dispensed · jammed</text>
+        <g class="snode" id="n-idle"><rect x="20" y="94" width="120" height="48" rx="8"/><text x="80" y="112">idle</text><text class="sub" x="80" y="129">{ }</text></g>
+        <g class="snode" id="n-paying"><rect x="200" y="94" width="140" height="48" rx="8"/><text x="270" y="112">paying</text><text class="sub" x="270" y="129">{ slot, inserted }</text></g>
+        <g class="snode" id="n-dispensing"><rect x="440" y="94" width="130" height="48" rx="8"/><text x="505" y="112">dispensing</text><text class="sub" x="505" y="129">{ …, change }</text></g>
+      </svg>
+    </div>
+
+    <div class="timeline">
+      <div class="tl-head">
+        <span>time travel</span>
+        <input type="range" id="cursor" min="0" max="0" value="0" aria-label="الرجوع لأي لحظة">
+        <span id="replay"></span>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+  </section>
+
+  <section class="narration" aria-label="الخطوات">
+    <ol class="steps" id="steps"></ol>
+    <article class="now" aria-live="polite">
+      <div class="eyebrow" id="eyebrow"></div>
+      <h2 id="now-title"></h2>
+      <p id="now-text"></p>
+      <pre id="now-code"></pre>
+    </article>
+  </section>
+
+  <section class="results">
+    <h2>التستات: قواعد بدل سيناريوهات</h2>
+    <p>عشان <code>step</code> نقية، التستات مش محتاجة mocks ولا setup. fast-check بيولّد آلاف الآلات وتسلسلات الـ events العشوائية (عملات وقت الـ dispensing، و sensor بيضرب من غير سبب، وخانات مش موجودة) وبيتأكد إن القواعد دي ثابتة في كل لحظة:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>القاعدة</th><th>بتمسك إيه</th><th class="num">تسلسلات</th></tr></thead>
+        <tbody>
+          <tr><td>مفيش عملة بتتخلق ولا بتضيع (لكل فئة لوحدها)</td><td>باقي غلط، أو refund ناقص، أو escrow ضاع</td><td class="num">2,000</td></tr>
+          <tr><td>الصندوق بيزيد بسعر اللي اتباع بالظبط</td><td>منتج نزل ببلاش، أو سعر غلط</td><td class="num">2,000</td></tr>
+          <tr><td>المخزون والعملات عمرهم ما يبقوا بالسالب</td><td>بيع من خانة فاضية، أو باقي من عملات مش موجودة</td><td class="num">2,000</td></tr>
+          <tr><td>مفيش dispense غير لمنتج موجود ومدفوع تمنه</td><td>أي طريق بيوصل للـ motor من غير فلوس</td><td class="num">2,000</td></tr>
+          <tr><td>نفس الـ events بتطلع نفس التاريخ</td><td>أي اعتماد مخفي على وقت أو random</td><td class="num">300</td></tr>
+          <tr><td><code>makeChange</code> بيلاقي باقي كل ما يكون فيه حل</td><td>greedy بيقول "مفيش باقي" وهو موجود</td><td class="num">2,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>للتأكد إنها مش تستات شكلية: لو شلت سطر خصم الباقي من الصندوق، 3 تستات بتقع على طول. ولو شلت أي <code>case</code> من الـ switch، الكومبايلر بيرفض يبني.</p>
+  </section>
+
+  <section class="decisions" id="decisions" aria-labelledby="decisions-title">
+    <div class="dec-head">
+      <h2 id="decisions-title">قرارات التصميم، ومقارنتها بالحل الكلاسيكي</h2>
+      <p>الحل المعتاد للسؤال ده: كلاس <code>VendingMachine</code> فيه <code>selectedProduct</code> و <code>totalCoins</code> و <code>currentState</code>، و State Pattern بأربع حالات (Idle و Ready و Dispense و ReturnChange)، وكل حالة بتعمل <code>machine.setState(new ...)</code>. ده كويس، بس فيه حاجات أحسن:</p>
+    </div>
+
+    <details>
+      <summary><span class="q">ليه function واحدة بدل State Pattern؟</span><span class="pick">step(state, event)</span></summary>
+      <div class="ans">
+        <ul>
+          <li>الآلة finite state machine. والـ FSM في الأساس جدول: (حالة، حدث) ← (حالة جديدة، أفعال). الـ State Pattern بيقطّع الجدول ده على 4 كلاسات، كل واحد ماسك reference للآلة وبيغيّر فيها.</li>
+          <li>الـ <code>switch</code> اترفض في الحل الكلاسيكي بحجة Open/Closed. بس مع discriminated unions، الكومبايلر <b>بيجبرك</b> تتعامل مع كل (حالة، حدث). لو ضفت حالة جديدة ونسيت تتعامل معاها في أي مكان، الكود مش هيبني. ده أأمن من OCP، لأن الحالات هنا مجموعة مقفولة مش plugin system.</li>
+        </ul>
+        <p class="alt">نسخة OOP كويسة ممكن تقرّب جداً من ده: states immutable، وكل method بترجّع الـ state اللي بعدها بدل ما تعمل <code>setState</code>. الفرق اللي بيفضل إن الـ effects بتتنفذ جوه الـ method بدل ما ترجع data.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">ليه كل حالة شايلة بياناتها جواها؟</span><span class="pick">make illegal states unrepresentable</span></summary>
+      <div class="ans">
+        <ul>
+          <li>لو <code>selectedProduct</code> و <code>currentState</code> حقلين منفصلين، تقدر تكتب آلة في <code>Idle</code> ومعاها منتج مختار. حالة مستحيلة، بس الكود بيسمح بيها، فلازم تفضل فاكرها في كل method.</li>
+          <li>هنا <code>idle</code> مالهاش أي بيانات، و <code>paying</code> معاها <code>slot</code> و <code>inserted</code>. الحالة المستحيلة ماينفعش تتكتب أصلاً.</li>
+        </ul>
+        <pre>type Phase =
+  | { tag: 'idle' }
+  | { tag: 'paying';     slot; inserted }
+  | { tag: 'dispensing'; slot; inserted; change }</pre>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">إرجاع الباقي حالة ولا فعل؟</span><span class="pick">effects as data</span></summary>
+      <div class="ans">
+        <ul>
+          <li><code>ReturnChangeState</code> مش مكان الآلة بتقف فيه، ده حاجة بتعملها. هنا بقى effect: <code>{ tag: 'returnCoins', coins }</code>.</li>
+          <li>الـ core مش بيلمس hardware خالص، بيرجّع قائمة. الـ shell (الصفحة دي، أو driver حقيقي) هو اللي ينفّذ. وده اللي خلّى التستات تقرا الـ effects زي أي قيمة، والصفحة تعملها animation.</li>
+          <li><code>dispensing</code> حالة حقيقية فعلاً، بس لسبب مختلف: الآلة مستنية تأكيد من الـ sensor، والفلوس محجوزة في escrow لحد ما المنتج ينزل.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">طب لو المنتج اتزنق؟ مين يعمل rollback؟</span><span class="pick">commit on confirmation</span></summary>
+      <div class="ans">
+        <ul>
+          <li>ولا حد، لأن مفيش حاجة اتغيرت. المخزون والصندوق مش بيتلمسوا غير لما event اسمه <code>dispensed</code> يوصل من الـ sensor.</li>
+          <li>لو وصل <code>jammed</code>، الآلة بترجع <code>idle</code> وبترجّع نفس العملات اللي اتحطت بالظبط. مفيش transaction ولا compensation: الـ atomicity جاية من التصميم نفسه.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">ليه الفلوس عملات مش رقم؟</span><span class="pick">CoinCounts, not totalCoins</span></summary>
+      <div class="ans">
+        <ul>
+          <li><code>totalCoins = 135</code> مش بيقولك تقدر ترجّع 35 قرش ولا لأ. لازم تعرف الصندوق فيه كام عملة من كل فئة. من غير كده حالة "Exact change only" مش هتلاقي ليها مكان في التصميم.</li>
+          <li>الـ greedy (ابدأ بأكبر عملة) بيفشل مع مخزون محدود: 30 قرش من {25، 10، 10، 10} مفيش 5 تكمّل بيها الـ 25. <code>makeChange</code> بيبدأ greedy وبيرجع خطوة لو اتزنق، فبيلاقي 10+10+10. شوف سيناريو "باقي صعب".</li>
+          <li>السعر integer بالقروش، لأن <code>0.1 + 0.2 !== 0.3</code>.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">المخزون بالمنتج ولا بالخانة؟</span><span class="pick">stock per slot</span></summary>
+      <div class="ans">
+        <ul>
+          <li>التمييز بين الـ position والـ product ID صح، بس المخزون الحقيقي بيتعد بالـ <b>خانة</b>. ممكن نفس المنتج يبقى في خانتين، وكل خانة بتفضى لوحدها.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">والـ concurrency و thread safety؟</span><span class="pick">one event at a time</span></summary>
+      <div class="ans">
+        <ul>
+          <li>الآلة بيقف قدامها زبون واحد. الـ events بتعدّي على <code>step</code> واحد ورا التاني، والـ core مفيهوش shared mutable state، فمفيش حاجة تتقفل عليها أصلاً.</li>
+          <li>لو الآلة اتحطت ورا API، يبقى الـ lock وظيفة الـ shell: event واحد في المرة على كل آلة. الـ core مش هيتغير.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="q">إزاي الصفحة بتعمل time travel؟</span><span class="pick">state = replay(events)</span></summary>
+      <div class="ans">
+        <ul>
+          <li>الصفحة مش بتخزّن الآلة. بتخزّن الآلة اللي بدأت بيها وقائمة الـ events، ومع كل رسمة بتنادي <code>run(start, events)</code> وتعرض اللحظة اللي إنت واقف عليها.</li>
+          <li>ارجع لأي لحظة واكبس أي زرار، هيتعمل فرع جديد من النقطة دي. ده event sourcing ببلاش، و undo ببلاش، وأي bug report ممكن يبقى مجرد قائمة events تعيد تشغيلها.</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+</div>
+
+<script type="module">
+import { run, money, total } from './vending.js';
+
+const SLOTS = {
+  A1: { product: 'Cola', price: 125, qty: 3 },
+  A2: { product: 'Water', price: 65, qty: 5 },
+  A3: { product: 'Juice', price: 150, qty: 2 },
+  B1: { product: 'Chips', price: 70, qty: 4 },
+  B2: { product: 'Candy', price: 55, qty: 0 },
+  B3: { product: 'Cookies', price: 110, qty: 3 },
+};
+const EMOJI = { Cola: '🥤', Water: '💧', Juice: '🧃', Chips: '🍟', Candy: '🍬', Cookies: '🍪' };
+const COIN_LABEL = { 5: '5¢', 10: '10¢', 25: '25¢', 100: '$1' };
+const FULL = { 5: 6, 10: 6, 25: 6, 100: 2 };
+const machine = (box) => ({ phase: { tag: 'idle' }, slots: SLOTS, box });
+
+const sel = (slot) => ({ tag: 'select', slot });
+const ins = (coin) => ({ tag: 'insert', coin });
+const CANCEL = { tag: 'cancel' }, BUY = { tag: 'buy' }, DISPENSED = { tag: 'dispensed' }, JAMMED = { tag: 'jammed' };
+
+// Each step: [event, title, narration]. The events are replayed through the real core; only the words are scripted.
+const SCENARIOS = [
+  { id: 'happy', tab: 'شراء بباقي', start: machine(FULL), steps: [
+    [sel('A2'), 'اختار مياه بـ 65 سنت', 'الحالة اتنقلت من <code>idle</code> لـ <code>paying</code>، والخانة بقت جوه الحالة نفسها. مفيش حقل <code>selectedProduct</code> في الآلة ممكن ينسى يتمسح.'],
+    [ins(100), 'حط دولار', 'الحالة لسه <code>paying</code>، والـ <code>inserted</code> بقى [100]. لوحة الدفع بتوريك الباقي اللي هيرجع (35 سنت)، ولسه مفيش حاجة نزلت: الآلة مستنية تأكيد.'],
+    [BUY, 'داس BUY', '<code>step</code> حسبت الباقي (25 + 10) وطلّعت effect اسمه <code>dispense</code> للـ motor. بس المخزون والصندوق لسه زي ما هما: الفلوس محجوزة جوه حالة <code>dispensing</code> لحد ما الـ sensor يأكد.'],
+    [DISPENSED, 'الـ sensor أكّد إن المنتج نزل', 'هنا بس الـ commit حصل: المخزون نقص واحد، والصندوق خد الدولار وطلّع الباقي. المياه في درج المنتج، والـ 25 والـ 10 في درج الباقي.'],
+  ] },
+  { id: 'greedy', tab: 'باقي صعب', start: machine({ 5: 0, 10: 3, 25: 2, 100: 2 }), steps: [
+    [sel('B1'), 'شيبسي بـ 70 سنت', 'بص على الصندوق تحت الآلة: مفيش ولا عملة 5. يعني لو حد دفع دولار، الباقي 30 سنت.'],
+    [ins(100), 'دفع دولار', 'الآلة بتقول الباقي 30 سنت. بس لسه ما قررتش هترجّعه بأنهي عملات، ده بيحصل لما تدوس BUY.'],
+    [BUY, 'الـ greedy كان هيقول "مفيش باقي"', 'الـ greedy هياخد 25 الأول، ويفضل 5 مش موجودة، فيفشل. <code>makeChange</code> رجع خطوة ولقى 10 + 10 + 10. والـ property test بيقارنه بـ brute force على 2,000 حالة.'],
+    [DISPENSED, 'المنتج نزل والباقي 3 عملات 10', 'بص على الصندوق: الـ 10 خلصوا والـ 25 زي ما هي.'],
+  ] },
+  { id: 'exact', tab: 'Exact change only', start: machine({ 5: 0, 10: 0, 25: 0, 100: 4 }), steps: [
+    [sel('A2'), 'الصندوق مفيهوش فكة', 'الآلة مليانة دولارات بس. مفيش 5 ولا 10 ولا 25.'],
+    [ins(100), 'دفع دولار', 'الآلة قبلت الدولار، بس لسه ماجربتش تعمل الباقي.'],
+    [BUY, 'رفض البيع بدل ما ياكل الباقي', 'مفيش أي تركيبة تعمل 35 سنت، فالآلة رجّعت الدولار ورجعت <code>idle</code>. لو الفلوس كانت رقم واحد (<code>totalCoins</code>) الحالة دي ماكانش ليها مكان في التصميم أصلاً.'],
+  ] },
+  { id: 'jam', tab: 'المنتج اتزنق', start: machine(FULL), steps: [
+    [sel('A1'), 'كولا بـ 1.25', 'سيناريو الـ rollback اللي بيتسأل عليه دايماً في الإنترفيو.'],
+    [ins(100), 'دولار', 'لسه ناقص 25 سنت.'],
+    [ins(25), 'ربع، والفلوس كملت', 'الفلوس كفاية بالظبط ومفيش باقي.'],
+    [BUY, 'داس BUY', 'اتطلب <code>dispense</code>، والفلوس محجوزة في <code>dispensing</code>، ومفيش حاجة اتكتبت في المخزون ولا الصندوق.'],
+    [JAMMED, 'الـ sensor قال إن المنتج اتزنق', 'مفيش rollback لأن مفيش حاجة حصلها commit. الآلة رجّعت نفس العملات اللي اتحطت بالظبط (100 و 25)، ورجعت <code>idle</code>، والمخزون لسه 3.'],
+  ] },
+  { id: 'cancel', tab: 'إلغاء', start: machine(FULL), steps: [
+    [sel('A3'), 'عصير بـ 1.50', ''],
+    [ins(25), 'ربع', ''],
+    [ins(25), 'ربع كمان', 'الـ <code>inserted</code> قائمة بالعملات الفعلية، مش مجموعها.'],
+    [CANCEL, 'الزبون غيّر رأيه', 'رجّعنا نفس العملتين. لو كنا شايلين المجموع بس كنا هنرجّع 50 سنت بأي فكة موجودة، ولو الصندوق فاضي كانت هتبقى مشكلة.'],
+  ] },
+  { id: 'chaos', tab: 'أحداث في غير وقتها', start: machine(FULL), steps: [
+    [ins(25), 'عملة من غير ما يختار حاجة', 'الحالة ما اتغيرتش، والعملة رجعت على طول. في الـ State Pattern ده الـ default بتاع الـ abstract class اللي بيرمي exception. هنا مجرد case بيرجّع effect.'],
+    [sel('B2'), 'خانة فاضية', 'الحلوى خلصانة، فالحالة فضلت <code>idle</code>.'],
+    [sel('A2'), 'اختار مياه', ''],
+    [BUY, 'داس BUY من غير فلوس', 'الحالة فضلت <code>paying</code> والآلة قالت فاضل قد إيه. مفيش <code>if (state == ...)</code> متفرقة في الكود، ده case واحد في الجدول.'],
+    [sel('B1'), 'غيّر رأيه وهو بيدفع', 'الآلة طلبت منه يكمّل أو يلغي. كل (حالة، حدث) ليها case، والكومبايلر بيتأكد إن مفيش واحد اتنسى.'],
+    [DISPENSED, 'الـ sensor ضرب من غير سبب', 'إشارة dispensed وإحنا مش في حالة <code>dispensing</code> ماغيرتش حاجة. الـ property tests بترمي آلاف الإشارات زي دي في أماكن عشوائية.'],
+    [CANCEL, 'إلغاء', ''],
+  ] },
+];
+
+const $ = (id) => document.getElementById(id);
+let scenario = SCENARIOS[0];
+let start = scenario.start;
+let events = scenario.steps.map((s) => s[0]);
+let notes = scenario.steps;     // narration for the scripted part, by index
+let cursor = 0;                  // how many events have happened
+let playing = null;
+let sensor = null;               // the simulated hardware: answers a dispense effect after a second
+
+// ---------- formatting ----------
+const fmt = (v) => Array.isArray(v) ? `[${v.map(fmt).join(', ')}]`
+  : v && typeof v === 'object' ? `{ ${Object.entries(v).map(([k, x]) => `${k}: ${fmt(x)}`).join(', ')} }`
+  : typeof v === 'string' ? `'${v}'` : String(v);
+const evLabel = (e) => e.tag === 'insert' ? `insert ${COIN_LABEL[e.coin]}` : e.tag === 'select' ? `select ${e.slot}` : e.tag;
+const fxLabel = (f) => f.tag === 'display' ? `display "${f.text}"` : f.tag === 'dispense' ? `dispense ${f.slot}` : `returnCoins [${f.coins.map((c) => COIN_LABEL[c]).join(' ')}]`;
+const coinClass = (c) => (c === 5 || c === 10 || c === 25 ? 'silver' : '');
+const esc = (s) => s.replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[ch]);
+
+function changes(t) {
+  const out = [];
+  for (const [id, s] of Object.entries(t.before.slots)) {
+    const q = t.after.slots[id].qty;
+    if (q !== s.qty) out.push(`slots.${id}.qty: ${s.qty} → ${q}`);
+  }
+  for (const c of [100, 25, 10, 5]) {
+    const d = t.after.box[c] - t.before.box[c];
+    if (d) out.push(`box[${c}]: ${t.before.box[c]} → ${t.after.box[c]}`);
+  }
+  return out;
+}
+
+// ---------- render ----------
+function render(animate = true) {
+  const trace = run(start, events);          // the page's only "state" is start + events
+  const now = cursor ? trace[cursor - 1] : null;
+  const m = now ? now.after : start;
+  const phase = m.phase;
+
+  // machine
+  const shown = trace.slice(0, cursor).flatMap((t) => t.effects).filter((f) => f.tag === 'display').at(-1);
+  $('lcd').textContent = shown ? shown.text : 'Welcome';
+  const vending = now?.effects.find((f) => f.tag === 'dispense')?.slot;
+  $('slots').innerHTML = Object.entries(m.slots).map(([id, s]) => `
+    <button class="slot ${phase.tag !== 'idle' && phase.slot === id ? 'selected' : ''} ${vending === id ? 'vending' : ''} ${s.qty === 0 ? 'empty' : ''}"
+      data-slot="${id}" aria-label="${id} ${s.product} ${money(s.price)}, ${s.qty} left">
+      <span class="emoji">${EMOJI[s.product]}</span><span class="id">${id} · ${s.product}</span>
+      <span class="price">${money(s.price)}</span><span class="qty">×${s.qty}</span>
+    </button>`).join('');
+  $('pay').innerHTML = payPanel(m, now);
+
+  // Trays keep what came out until the next sale starts, like a real machine.
+  let sale = cursor;
+  while (sale > 0 && !(trace[sale - 1].before.phase.tag === 'idle' && trace[sale - 1].after.phase.tag === 'paying')) sale--;
+  const out = trace.slice(sale, cursor).map((t, i) => ({ t, fresh: sale + i === cursor - 1 }));
+  const items = out.filter(({ t }) => t.event.tag === 'dispensed' && t.before.phase.tag === 'dispensing');
+  $('tray').innerHTML = items.map(({ t, fresh }) => { const p = t.before.slots[t.before.phase.slot].product; return `<span class="item ${fresh ? 'new' : ''}">${EMOJI[p]}<small>${p}</small></span>`; }).join('')
+    || '<span class="empty-t">your item drops here</span>';
+  const back = out.flatMap(({ t, fresh }) => t.effects.filter((f) => f.tag === 'returnCoins').flatMap((f) => f.coins.map((c) => ({ c, fresh }))));
+  $('change').dataset.label = back.length ? `CHANGE ${money(total(back.map((x) => x.c)))}` : 'CHANGE';
+  $('change').innerHTML = back.map(({ c, fresh }, i) => `<span class="c ${coinClass(c)} ${fresh ? 'new' : ''}" style="animation-delay:${i * 90}ms">${COIN_LABEL[c]}</span>`).join('')
+    || '<span class="empty-t">coins return here</span>';
+  const ready = phase.tag === 'paying' && total(phase.inserted) >= m.slots[phase.slot].price;
+  document.querySelector('.keys .buy').classList.toggle('ready', ready);
+  $('box').innerHTML = `coin box:` + [100, 25, 10, 5].map((c) => `<span>${COIN_LABEL[c]}×<b>${m.box[c]}</b></span>`).join('');
+
+  // step()
+  const pill = (p) => `<span class="pill ${p.tag}">${p.tag}</span>`;
+  $('fn').innerHTML = now ? `
+      <div class="sig in"><span class="kw">step(</span>${pill(now.before.phase)}<span class="kw">,</span><span class="pill ev">${esc(evLabel(now.event))}</span><span class="kw">)</span></div>
+      <div class="sig out"><span class="arrow">→ [</span>${pill(now.after.phase)}<span class="kw">,</span>
+        ${now.effects.length ? now.effects.map((f) => `<span class="pill fx">${esc(fxLabel(f))}</span>`).join('') : '<span class="pill none">no effects</span>'}<span class="kw">]</span></div>`
+    : `<div class="sig"><span class="kw">machine =</span>${pill(phase)}<span class="kw">// اكبس زرار أو شغّل السيناريو</span></div>`;
+  if (animate) { const fn = $('fn'); fn.replaceWith(fn); }
+
+  // state diagram
+  for (const tag of ['idle', 'paying', 'dispensing']) $('n-' + tag).classList.toggle('active', phase.tag === tag);
+  const from = now?.before.phase.tag, to = now?.after.phase.tag;
+  const edge = !now ? null
+    : from === 'idle' && to === 'paying' ? 'select'
+    : from === 'paying' && to === 'paying' && now.event.tag === 'insert' ? 'loop'
+    : from === 'paying' && to === 'dispensing' ? 'pay'
+    : from === 'paying' && to === 'idle' ? 'back'
+    : from === 'dispensing' && to === 'idle' ? 'done' : null;
+  for (const e of ['select', 'loop', 'pay', 'back', 'done']) {
+    $('e-' + e).classList.toggle('active', edge === e);
+    $('l-' + e).classList.toggle('active', edge === e);
+  }
+  $('l-back2').classList.toggle('active', edge === 'back');
+  document.querySelectorAll('.snode').forEach((n) => n.classList.remove('rejected'));
+  if (now && !edge && animate) { const n = $('n-' + to); void n.getBBox(); requestAnimationFrame(() => n.classList.add('rejected')); }
+
+  // timeline
+  const slider = $('cursor');
+  slider.max = String(events.length);
+  slider.value = String(cursor);
+  $('replay').textContent = `run(start, ${events.length} events) → showing ${cursor}`;
+  $('chips').innerHTML = events.length
+    ? events.map((e, i) => `<button data-at="${i + 1}" class="${i + 1 === cursor ? 'current' : i < cursor ? 'past' : 'future'}">${i + 1}. ${esc(evLabel(e))}</button>`).join('')
+    : '<span class="empty">لسه مفيش events. اكبس أي زرار في الآلة.</span>';
+
+  // narration
+  $('steps').innerHTML = scenario
+    ? scenario.steps.map((s, i) => `<li class="${i + 1 === cursor ? 'current' : i < cursor ? 'done' : ''}"><button data-at="${i + 1}">${s[1]}</button></li>`).join('')
+    : '<li><p class="hint">إنت دلوقتي بتلعب بنفسك. كل زرار بتدوسه بيتحوّل لـ event بيتضاف للقائمة، والصفحة بتعيد تشغيل القائمة كلها من الأول.</p></li>';
+  const note = now ? notes[cursor - 1] : null;
+  $('eyebrow').textContent = now ? `الخطوة ${cursor} من ${events.length}` : 'البداية';
+  $('now-title').textContent = note ? note[1] : now ? evLabel(now.event) : (scenario ? scenario.tab : 'جرّب بنفسك');
+  $('now-text').innerHTML = note?.[2] || (now ? autoText(now) : 'الآلة في <code>idle</code>. اكبس ▶ أو ← عشان تمشي خطوة خطوة، أو اكبس أي زرار في الآلة وابدأ فرع جديد.');
+  $('now-code').textContent = now
+    ? `step(\n  ${fmt(now.before.phase)},\n  ${fmt(now.event)}\n) → [\n  ${fmt(now.after.phase)},\n  [${now.effects.length ? `\n    ${now.effects.map(fmt).join(',\n    ')}\n  ` : ''}]\n]` + (changes(now).length ? `\n\n// changed\n${changes(now).join('\n')}` : '')
+    : `const machine = ${fmt(start.phase)}\n// box: ${fmt(start.box)}`;
+
+  $('prev').disabled = cursor === 0;
+  $('next').disabled = cursor === events.length;
+  $('play').disabled = cursor === events.length && !playing;
+  $('play').textContent = playing ? '❚❚ إيقاف' : '▶ تشغيل';
+  document.querySelectorAll('#tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === (scenario ? scenario.id : 'free'))));
+}
+
+const PAY_STEPS = ['Pick', 'Pay', 'Buy'];
+function payPanel(m, now) {
+  const p = m.phase;
+  const step = p.tag === 'idle' ? 0 : p.tag === 'dispensing' ? 3 : total(p.inserted) >= m.slots[p.slot].price ? 2 : 1;
+  const steps = `<ol class="pay-steps">${PAY_STEPS.map((t, k) => `<li class="${k < step ? 'done' : k === step ? 'cur' : ''}">${t}</li>`).join('')}</ol>`;
+  if (p.tag === 'idle') return steps + '<span class="muted">tap a product above to start</span>';
+  const s = m.slots[p.slot], paid = total(p.inserted), diff = paid - s.price;
+  const lastCoin = now?.event.tag === 'insert' && now.after.phase.tag === 'paying' ? p.inserted.length - 1 : -1;
+  const coins = p.inserted.map((c, i) => `<span class="c ${coinClass(c)} ${i === lastCoin ? 'new' : ''}">${COIN_LABEL[c]}</span>`).join('') || '<span class="muted">no coins yet</span>';
+  return steps + `
+    <div class="pay-row"><span>${EMOJI[s.product]} ${s.product}</span><b>${money(s.price)}</b></div>
+    <div class="pay-coins">${coins}</div>
+    <div class="pay-row"><span>Paid</span><b>${money(paid)}</b></div>
+    <div class="pay-row ${diff >= 0 ? 'ok' : 'due'}"><span>${diff >= 0 ? 'Change' : 'Remaining'}</span><b>${money(Math.abs(diff))}</b></div>`;
+}
+
+function autoText(t) {
+  const a = t.before.phase.tag, b = t.after.phase.tag;
+  if (a === b && !changes(t).length) return `الحالة فضلت <code>${b}</code>${t.effects.length ? '، والـ effects بس اللي اتغيرت.' : ' ومفيش effects: الـ event اتجاهل.'}`;
+  return `<code>${a}</code> ← <code>${b}</code>${changes(t).length ? '، وده الوقت الوحيد اللي المخزون والصندوق بيتغيروا فيه.' : '.'}`;
+}
+
+// ---------- actions ----------
+function stop() { clearInterval(playing); playing = null; clearTimeout(sensor); }
+function go(at) { stop(); cursor = Math.max(0, Math.min(events.length, at)); render(); }
+
+// Any button press appends an event at the cursor. If you travelled back, the future is dropped: a new branch.
+function act(event) {
+  stop();
+  if (scenario) { notes = notes.slice(0, cursor); scenario = null; }
+  events = [...events.slice(0, cursor), event];
+  cursor = events.length;
+  render();
+  // The shell carries out a dispense effect: the motor turns, then the sensor reports back as a new event.
+  if (run(start, events).at(-1).effects.some((f) => f.tag === 'dispense')) {
+    sensor = setTimeout(() => {
+      const jam = $('jam').checked;
+      $('jam').checked = false;
+      act(jam ? JAMMED : DISPENSED);
+    }, 1000);
+  }
+}
+
+function load(id) {
+  stop();
+  scenario = SCENARIOS.find((s) => s.id === id) ?? null;
+  start = scenario ? scenario.start : machine(FULL);
+  events = scenario ? scenario.steps.map((s) => s[0]) : [];
+  notes = scenario ? scenario.steps : [];
+  cursor = 0;
+  render();
+}
+
+$('tabs').innerHTML = SCENARIOS.map((s) => `<button data-id="${s.id}">${s.tab}</button>`).join('') + '<button data-id="free">جرّب بنفسك</button>';
+$('tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) load(b.dataset.id); });
+$('coins').innerHTML = [5, 10, 25, 100].map((c) => `<button class="coin ${coinClass(c)}" data-coin="${c}" aria-label="insert ${COIN_LABEL[c]}">${COIN_LABEL[c]}</button>`).join('') + '';
+$('actions').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  act(b.dataset.buy !== undefined ? BUY : CANCEL);
+});
+$('coins').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  act(ins(Number(b.dataset.coin)));
+});
+$('slots').addEventListener('click', (e) => { const b = e.target.closest('[data-slot]'); if (b) act(sel(b.dataset.slot)); });
+$('cursor').addEventListener('input', (e) => go(Number(e.target.value)));
+$('chips').addEventListener('click', (e) => { const b = e.target.closest('[data-at]'); if (b) go(Number(b.dataset.at)); });
+$('steps').addEventListener('click', (e) => { const b = e.target.closest('[data-at]'); if (b) go(Number(b.dataset.at)); });
+$('prev').addEventListener('click', () => go(cursor - 1));
+$('next').addEventListener('click', () => go(cursor + 1));
+$('play').addEventListener('click', () => {
+  if (playing) { stop(); render(false); return; }
+  if (cursor === events.length) cursor = 0;
+  const tick = () => { if (cursor >= events.length) { stop(); render(false); return; } cursor++; render(); };
+  playing = setInterval(tick, 1800);
+  tick();
+});
+
+render(false);
+</script>
+</body>
+</html>

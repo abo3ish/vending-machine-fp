@@ -1,0 +1,16 @@
+{
+  "name": "vending-machine-fp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc",
+    "build:web": "esbuild src/machine.ts --bundle --format=esm --outfile=docs/vending.js"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2"
+  }
+}
