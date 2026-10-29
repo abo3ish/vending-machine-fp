@@ -6,7 +6,7 @@ The classic low-level design interview question, solved without the State patter
 step(machine, event) → [machine, effects]
 ```
 
-**▶ [Try it in the animated walkthrough](https://abo3ish.github.io/vending-machine-fp/)**: buy something, jam the motor, run out of change, then scrub back through time and branch from any moment.
+**▶ [Try it in the animated walkthrough](https://abo3ish.github.io/vending-machine/)**: buy something, jam the motor, run out of change, then scrub back through time and branch from any moment.
 
 ## The design
 
